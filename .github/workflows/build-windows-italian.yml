@@ -15,6 +15,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
+          repository: swarnavspujari/fly-on-the-wall
           ref: v2.4.0
           persist-credentials: false
 
