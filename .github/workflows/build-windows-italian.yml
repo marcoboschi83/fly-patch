@@ -33,11 +33,25 @@ jobs:
 
           def replace(path, old, new, count=1):
               p = Path(path)
-              text = p.read_text(encoding="utf-8")
+              text = p.read_text(encoding="utf-8").replace("\r\n", "\n")
               found = text.count(old)
+              if found == 0 and new in text:
+                  print(f"{path}: already patched")
+                  return
               if found != count:
-                  raise SystemExit(f"{path}: expected {count} occurrence(s), found {found}")
+                  raise SystemExit(
+                      f"{path}: expected {count} occurrence(s) of {old[:90]!r}, found {found}"
+                  )
               p.write_text(text.replace(old, new, count), encoding="utf-8", newline="\n")
+
+          def replace_regex(path, pattern, replacement, label):
+              import re
+              p = Path(path)
+              text = p.read_text(encoding="utf-8").replace("\r\n", "\n")
+              updated, n = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE)
+              if n == 0:
+                  raise SystemExit(f"{path}: couldn't locate anchor for {label}")
+              p.write_text(updated, encoding="utf-8", newline="\n")
 
           # Backend settings: expose, persist and validate the selected language.
           replace(
@@ -134,31 +148,32 @@ jobs:
               count=2
           )
           # Settings draft, save payload and dirty-state comparison.
-          replace(
+          # Settings draft, save payload and dirty-state comparison.
+          replace_regex(
               "frontend/src/settingsModel.ts",
-              "  modelId: string;\n  maxQuality: boolean;",
-              '  modelId: string;\n  language: "it" | "en";\n  maxQuality: boolean;'
+              r"^(\s*modelId: string;)$",
+              r'\1\n  language: "it" | "en";',
+              "AsrDraft language field"
           )
-          replace(
+          replace_regex(
               "frontend/src/settingsModel.ts",
-              "    modelId: s.model_id ?? \"\",\n    maxQuality: s.max_quality,",
-              '    modelId: s.model_id ?? "",\n    language: s.language,\n    maxQuality: s.max_quality,'
+              r'^(\s*modelId: s\.model_id \?\? "",)$',
+              r"\1\n    language: s.language,",
+              "draft language mapping"
           )
-          replace(
+          replace_regex(
               "frontend/src/settingsModel.ts",
-              "    model_id: draft.modelId || null,\n    // Keep a saved Cloud tier's own use_groq flag untouched.",
-              "    model_id: draft.modelId || null,\n    language: draft.language,\n    // Keep a saved Cloud tier's own use_groq flag untouched."
+              r"^(\s*model_id: draft\.modelId \|\| null,)$",
+              r"\1\n    language: draft.language,",
+              "save payload language"
           )
-          replace(
+          replace_regex(
               "frontend/src/settingsModel.ts",
-              "    draft.modelId !== base.modelId ||\n    draft.maxQuality !== base.maxQuality ||",
-              "    draft.modelId !== base.modelId ||\n    draft.language !== base.language ||\n    draft.maxQuality !== base.maxQuality ||"
+              r"^(\s*draft\.modelId !== base\.modelId \|\|)$",
+              r"\1\n    draft.language !== base.language ||",
+              "language dirty-state comparison"
           )
-          replace(
-              "frontend/src/settingsModel.ts",
-              "      \"quality fast balanced best made on groq cloud key model whisper maximum gpu graphics card speed test engine models download disk hardware computer ram cpu cores vram api key keychain fallback\",",
-              "      \"quality fast balanced best made on groq cloud key model whisper maximum gpu graphics card speed test engine models download disk hardware computer ram cpu cores vram api key keychain fallback language Italian English transcription\","
-          )
+
 
           # Visible dropdown in Settings > Transcripts.
           replace(
