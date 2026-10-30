@@ -1,46 +1,25 @@
+              "        model_id: saved.model_id,\n        use_groq: saved.use_groq,",
+              "        model_id: saved.model_id,\n        language: saved.language,\n        use_groq: saved.use_groq,"
+          )
+          replace(
+              "frontend/src/settingsModel.test.ts",
+              '    expect(isAsrDirty({ ...d, modelId: "ggml-small-q5_1" }, saved, "")).toBe(true);',
+              '    expect(isAsrDirty({ ...d, modelId: "ggml-small-q5_1" }, saved, "")).toBe(true);\n    expect(isAsrDirty({ ...d, language: "en" }, saved, "")).toBe(true);'
+          )
 
-name: Build Fly on the Wall 2.4.0 (Italian + Local AI)
+          # Enhance/report output is deliberately Italian even when the source
+          # transcript is English. User-authored note blocks keep their wording.
+          replace(
+              "crates/fly-core/src/enhance.rs",
+              r'''        "{}\n\n{}\n{}",
+                  template.system_prompt, contract, template.structure_hint''',
+              r'''        "{}\n\n{}\n{}\n\nReport language: write all AI-generated report blocks in Italian, regardless of the transcript language. Translate relevant spoken content into natural Italian. Preserve user-authored notes in their original wording and language.",
+                  template.system_prompt, contract, template.structure_hint'''
+          )
 
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  build-windows:
-    name: Build Windows installer (unsigned)
-    runs-on: windows-latest
-    timeout-minutes: 90
-
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-        with:
-          repository: swarnavspujari/fly-on-the-wall
-          ref: v2.4.0
-          persist-credentials: false
-
-      - name: Apply Italian default transcription language
-        shell: pwsh
-        run: |
-          $p = 'src-tauri/src/pipeline.rs'
-          $s = Get-Content $p -Raw
-
-          $old = 'None => Some("en".to_string()),'
-          $new = 'None => Some("it".to_string()),'
-
-          if (-not $s.Contains($old)) {
-            throw "Patch context not found in $p. The upstream source may have changed."
-          }
-
-          $s = $s.Replace($old, $new)
-
-          Set-Content -Path $p -Value $s -NoNewline -Encoding utf8
-
-          if (-not (Select-String -Path $p -SimpleMatch $new -Quiet)) {
-            throw 'Italian language patch verification failed.'
-          }
+          print("Language selector, live/final ASR language, and Italian report output patches applied.")
+          '@
+          $patch | python -
 
       - name: Allow private LAN HTTP endpoints for local AI
         shell: pwsh
@@ -53,9 +32,7 @@ jobs:
           }
 
           $loopbackPattern = '(?s)let loopback\s*=\s*parsed\.host_str\(\)\.is_some_and\(\|h\| \{.*?\n\s*\}\);'
-
           $loopbackMatches = [regex]::Matches($s, $loopbackPattern)
-
           if ($loopbackMatches.Count -ne 1) {
             throw "Expected one loopback validation block, found $($loopbackMatches.Count)."
           }
@@ -63,52 +40,28 @@ jobs:
           $privateHost = @'
           let private_host = parsed.host_str().is_some_and(|h| {
               let host = h.trim_start_matches('[').trim_end_matches(']');
-
               host.eq_ignore_ascii_case("localhost")
                   || host.parse::<std::net::IpAddr>().is_ok_and(|ip| match ip {
-                      std::net::IpAddr::V4(v4) => {
-                          v4.is_private() || v4.is_loopback()
-                      }
+                      std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_loopback(),
                       std::net::IpAddr::V6(v6) => {
-                          v6.is_loopback()
-                              || (v6.segments()[0] & 0xfe00) == 0xfc00
+                          v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00
                       }
                   })
           });
           '@
 
-          $s = [regex]::Replace(
-            $s,
-            $loopbackPattern,
-            $privateHost.Trim(),
-            1
-          )
-
-          $conditionPattern = '!keyed\s*\|\|\s*loopback'
-          $conditionMatches = [regex]::Matches($s, $conditionPattern)
-
-          if ($conditionMatches.Count -ne 1) {
-            throw "Expected one keyed-provider loopback condition, found $($conditionMatches.Count)."
+          $s = [regex]::Replace($s, $loopbackPattern, $privateHost.Trim(), 1)
+          $oldHttp = '"http" => !keyed || loopback,'
+          $newHttp = '"http" => !keyed || private_host,'
+          if (-not $s.Contains($oldHttp)) {
+            throw "Expected HTTP loopback policy was not found."
           }
-
-          $s = [regex]::Replace(
-            $s,
-            $conditionPattern,
-            '!keyed || private_host',
-            1
-          )
-
+          $s = $s.Replace($oldHttp, $newHttp)
           Set-Content -Path $p -Value $s -NoNewline -Encoding utf8
 
-          if (-not $s.Contains('let private_host = parsed.host_str()')) {
-            throw "Private host validation was not installed."
-          }
-
           if (-not $s.Contains('!keyed || private_host')) {
-            throw "Private host condition was not installed."
+            throw "Private LAN HTTP validation patch failed."
           }
-
-          Write-Host "Private LAN HTTP patch applied successfully."
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -118,7 +71,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install WebView2 and Windows build dependencies
+      - name: Check build tools
         shell: pwsh
         run: |
           rustc -V
@@ -146,7 +99,7 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: FlyOnTheWall-2.4.0-Italian-Local-AI-Windows-Installer
+          name: FlyOnTheWall-2.4.0-Italian-English-Transcription-Italian-Reports-Windows
           path: target/release/bundle/nsis/*.exe
           if-no-files-found: error
           retention-days: 14
