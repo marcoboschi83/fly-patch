@@ -87,51 +87,18 @@ jobs:
           # Final transcription uses the selected language; Italian is the default.
           replace(
               "src-tauri/src/pipeline.rs",
-              """    // Meetings are transcribed in a fixed language ("asr.language" setting,
-              // default English, "auto" opts back into detection). Auto-detect on a
-              // language-less window (silence, noise) destabilizes whisper decoding —
-              // it was part of how a real meeting collapsed into a hallucination loop.
-              let language = match language_setting.as_deref() {
-                  Some("auto") => None,
-                  Some(lang) => Some(lang.to_string()),
-                  None => Some("en".to_string()),
-              };""",
-              """    // Transcribe in the user-selected language. Italian is the default;
-              // reports are generated separately in Italian by the Enhance prompt.
-              let language = match language_setting.as_deref() {
-                  Some("en") => Some("en".to_string()),
-                  Some("it") | None => Some("it".to_string()),
-                  _ => Some("it".to_string()),
-              };"""
+              'None => Some("en".to_string()),',
+              'None => Some("it".to_string()),'
           )
 
           # Live captions read the same persisted choice as the final transcript.
-          replace(
+          replace_regex(
               "src-tauri/src/live.rs",
-              """    if !enabled {
-                  return;
-              }
-
-              let on_model = {""",
-              """    if !enabled {
-                  return;
-              }
-
-              let live_language = {
-                  let state = app.state::<AppState>();
-                  state
-                      .storage
-                      .lock()
-                      .unwrap()
-                      .get_setting("asr.language")
-                      .ok()
-                      .flatten()
-                      .filter(|value| value == "it" || value == "en")
-                      .unwrap_or_else(|| "it".to_string())
-              };
-
-              let on_model = {"""
+              r'(?m)^(    let on_model = \{)$',
+              r'    let live_language = {\n        let state = app.state::<AppState>();\n        state.storage.lock().unwrap().get_setting("asr.language").ok().flatten().filter(|v| v == "it" || v == "en").unwrap_or_else(|| "it".to_string())\n    };\n\n\1',
+              "live transcription language setting"
           )
+
           replace(
               "src-tauri/src/live.rs",
               "                        language: None,\n                        prompt:",
@@ -176,31 +143,11 @@ jobs:
 
 
           # Visible dropdown in Settings > Transcripts.
-          replace(
+          replace_regex(
               "frontend/src/components/SettingsModal.tsx",
-              '''                    >
-                      <SettingsRow
-                        title="Quality"''',
-              '''                    >
-                      <SettingsRow
-                        title="Transcription language"
-                        helper="Language used to recognize speech. AI-generated reports remain in Italian."
-                        control={
-                          <Select
-                            aria-label="Transcription language"
-                            style={{ width: 230, maxWidth: "100%" }}
-                            value={draft.language}
-                            onChange={(e) =>
-                              patchDraft({ language: e.target.value as "it" | "en" })
-                            }
-                          >
-                            <option value="it">Italiano</option>
-                            <option value="en">English</option>
-                          </Select>
-                        }
-                      />
-                      <SettingsRow
-                        title="Quality"''',
+              r'(?m)^([ ]*)<SettingsRow\n[ ]*title="Quality"',
+              r'\1<SettingsRow\n\1  title="Transcription language"\n\1  helper="Language used to recognize speech. AI-generated reports remain in Italian."\n\1  control={\n\1    <Select aria-label="Transcription language" value={draft.language} onChange={(e) => patchDraft({ language: e.target.value as "it" | "en" })}>\n\1      <option value="it">Italiano</option>\n\1      <option value="en">English</option>\n\1    </Select>\n\1  }\n\1 />\n\1<SettingsRow\n\1  title="Quality"',
+              "transcription language dropdown"
           )
 
           # Add an instant on/off switch for live captions in Settings > Recording.
@@ -247,10 +194,8 @@ jobs:
           # transcript is English. User-authored note blocks keep their wording.
           replace(
               "crates/fly-core/src/enhance.rs",
-              r'''        "{}\n\n{}\n{}",
-                  template.system_prompt, contract, template.structure_hint''',
-              r'''        "{}\n\n{}\n{}\n\nReport language: write all AI-generated report blocks in Italian, regardless of the transcript language. Translate relevant spoken content into natural Italian. Preserve user-authored notes in their original wording and language.",
-                  template.system_prompt, contract, template.structure_hint'''
+              '        "{}\\n\\n{}\\n{}",',
+              '        "{}\\n\\n{}\\n{}\\n\\nReport language: write all AI-generated report blocks in Italian, regardless of the transcript language. Translate spoken content into natural Italian. Preserve user-authored notes in their original language.",'
           )
 
           print("Language selector, live/final ASR language, and Italian report output patches applied.")
