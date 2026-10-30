@@ -125,17 +125,14 @@ jobs:
           )
 
           # Frontend types.
+          # Both AsrSettings and AsrSettingsUpdate share this field sequence.
+          # Replace both occurrences in one operation to avoid a partial patch.
           replace(
               "frontend/src/types.ts",
               "  model_id: string | null;\n  use_groq: boolean;",
-              "  model_id: string | null;\n  language: \"it\" | \"en\";\n  use_groq: boolean;"
+              '  model_id: string | null;\n  language: "it" | "en";\n  use_groq: boolean;',
+              count=2
           )
-          replace(
-              "frontend/src/types.ts",
-              "  model_id: string | null;\n  use_groq: boolean;\n  max_quality: boolean;",
-              "  model_id: string | null;\n  language: \"it\" | \"en\";\n  use_groq: boolean;\n  max_quality: boolean;"
-          )
-
           # Settings draft, save payload and dirty-state comparison.
           replace(
               "frontend/src/settingsModel.ts",
