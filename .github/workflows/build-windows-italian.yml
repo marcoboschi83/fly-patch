@@ -48,89 +48,67 @@ jobs:
           $p = 'src-tauri/src/llm_commands.rs'
           $s = Get-Content $p -Raw
 
-          if ($s.Contains('pub fn validate_base_url')) {
-            throw "validate_base_url already exists. Unexpected source version."
+          if (-not $s.Contains('pub fn validate_base_url')) {
+            throw "validate_base_url function not found."
           }
 
-          $marker = 'pub fn set_llm_settings('
-          $index = $s.IndexOf($marker)
+          $loopbackPattern = '(?s)let loopback\s*=\s*parsed\.host_str\(\)\.is_some_and\(\|h\| \{.*?\n\s*\}\);'
 
-          if ($index -lt 0) {
-            throw "set_llm_settings function not found."
+          $loopbackMatches = [regex]::Matches($s, $loopbackPattern)
+
+          if ($loopbackMatches.Count -ne 1) {
+            throw "Expected one loopback validation block, found $($loopbackMatches.Count)."
           }
 
-          $validator = @'
-          pub fn validate_base_url(provider: &str, url: &str) -> Result<(), String> {
-              let url = url.trim();
+          $privateHost = @'
+          let private_host = parsed.host_str().is_some_and(|h| {
+              let host = h.trim_start_matches('[').trim_end_matches(']');
 
-              if url.is_empty() {
-                  return Ok(());
-              }
-
-              let parsed = tauri::Url::parse(url)
-                  .map_err(|_| format!("'{url}' is not a valid URL"))?;
-
-              let private_host = parsed.host_str().is_some_and(|h| {
-                  let host = h.trim_start_matches('[').trim_end_matches(']');
-
-                  host.eq_ignore_ascii_case("localhost")
-                      || host.parse::<std::net::IpAddr>().is_ok_and(|ip| match ip {
-                          std::net::IpAddr::V4(v4) => {
-                              v4.is_private() || v4.is_loopback()
-                          }
-                          std::net::IpAddr::V6(v6) => {
-                              v6.is_loopback()
-                                  || (v6.segments()[0] & 0xfe00) == 0xfc00
-                          }
-                      })
-              });
-
-              let keyed = secret_key_for(provider).is_some();
-
-              let ok = match parsed.scheme() {
-                  "https" => true,
-                  "http" => !keyed || private_host,
-                  _ => false,
-              };
-
-              let no_userinfo = !keyed
-                  || (parsed.username().is_empty() && parsed.password().is_none());
-
-              if ok && no_userinfo {
-                  Ok(())
-              } else {
-                  Err(format!(
-                      "base URL for {provider} must use HTTPS, or HTTP to localhost/private network"
-                  ))
-              }
-          }
+              host.eq_ignore_ascii_case("localhost")
+                  || host.parse::<std::net::IpAddr>().is_ok_and(|ip| match ip {
+                      std::net::IpAddr::V4(v4) => {
+                          v4.is_private() || v4.is_loopback()
+                      }
+                      std::net::IpAddr::V6(v6) => {
+                          v6.is_loopback()
+                              || (v6.segments()[0] & 0xfe00) == 0xfc00
+                      }
+                  })
+          });
           '@
 
-          $commandAttribute = $s.LastIndexOf('#[tauri::command]', $index)
+          $s = [regex]::Replace(
+            $s,
+            $loopbackPattern,
+            $privateHost.Trim(),
+            1
+          )
 
-          if ($commandAttribute -lt 0) {
-            throw "Could not locate set_llm_settings command attribute."
+          $conditionPattern = '!keyed\s*\|\|\s*loopback'
+          $conditionMatches = [regex]::Matches($s, $conditionPattern)
+
+          if ($conditionMatches.Count -ne 1) {
+            throw "Expected one keyed-provider loopback condition, found $($conditionMatches.Count)."
           }
 
-          $s = $s.Insert($commandAttribute, $validator + "`r`n")
-
-          $signature = "pub fn set_llm_settings(state: State<'_, AppState>, update: LlmSettingsUpdate) -> CmdResult<()> {"
-
-          if (-not $s.Contains($signature)) {
-            throw "set_llm_settings signature not recognized."
-          }
-
-          $replacement = $signature + "`r`n    validate_base_url(&update.provider, update.base_url.as_deref().unwrap_or(""""))?;"
-
-          $s = $s.Replace($signature, $replacement)
+          $s = [regex]::Replace(
+            $s,
+            $conditionPattern,
+            '!keyed || private_host',
+            1
+          )
 
           Set-Content -Path $p -Value $s -NoNewline -Encoding utf8
 
-          if (-not $s.Contains('validate_base_url(&update.provider')) {
-            throw "Validation call insertion failed."
+          if (-not $s.Contains('let private_host = parsed.host_str()')) {
+            throw "Private host validation was not installed."
           }
 
-          Write-Host "Private LAN HTTP validation installed successfully."
+          if (-not $s.Contains('!keyed || private_host')) {
+            throw "Private host condition was not installed."
+          }
+
+          Write-Host "Private LAN HTTP patch applied successfully."
 
       - name: Install Node.js
         uses: actions/setup-node@v4
