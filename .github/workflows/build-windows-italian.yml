@@ -57,51 +57,51 @@ jobs:
           }
 
           $new = @'
-pub fn validate_base_url(provider: &str, url: &str) -> Result<(), String> {
-    let url = url.trim();
+          pub fn validate_base_url(provider: &str, url: &str) -> Result<(), String> {
+              let url = url.trim();
 
-    if url.is_empty() {
-        return Ok(());
-    }
+              if url.is_empty() {
+                  return Ok(());
+              }
 
-    let parsed = tauri::Url::parse(url)
-        .map_err(|_| format!("'{url}' is not a valid URL"))?;
+              let parsed = tauri::Url::parse(url)
+                  .map_err(|_| format!("'{url}' is not a valid URL"))?;
 
-    let private_host = parsed.host_str().is_some_and(|h| {
-        let host = h.trim_start_matches('[').trim_end_matches(']');
+              let private_host = parsed.host_str().is_some_and(|h| {
+                  let host = h.trim_start_matches('[').trim_end_matches(']');
 
-        host.eq_ignore_ascii_case("localhost")
-            || host.parse::<std::net::IpAddr>().is_ok_and(|ip| match ip {
-                std::net::IpAddr::V4(v4) => {
-                    v4.is_private() || v4.is_loopback()
-                }
-                std::net::IpAddr::V6(v6) => {
-                    v6.is_loopback()
-                        || (v6.segments()[0] & 0xfe00) == 0xfc00
-                }
-            })
-    });
+                  host.eq_ignore_ascii_case("localhost")
+                      || host.parse::<std::net::IpAddr>().is_ok_and(|ip| match ip {
+                          std::net::IpAddr::V4(v4) => {
+                              v4.is_private() || v4.is_loopback()
+                          }
+                          std::net::IpAddr::V6(v6) => {
+                              v6.is_loopback()
+                                  || (v6.segments()[0] & 0xfe00) == 0xfc00
+                          }
+                      })
+              });
 
-    let keyed = secret_key_for(provider).is_some();
+              let keyed = secret_key_for(provider).is_some();
 
-    let ok = match parsed.scheme() {
-        "https" => true,
-        "http" => !keyed || private_host,
-        _ => false,
-    };
+              let ok = match parsed.scheme() {
+                  "https" => true,
+                  "http" => !keyed || private_host,
+                  _ => false,
+              };
 
-    let no_userinfo = !keyed
-        || (parsed.username().is_empty() && parsed.password().is_none());
+              let no_userinfo = !keyed
+                  || (parsed.username().is_empty() && parsed.password().is_none());
 
-    if ok && no_userinfo {
-        Ok(())
-    } else {
-        Err(format!(
-            "base URL for {provider} must use HTTPS, or HTTP to localhost/private network"
-        ))
-    }
-}
-'@
+              if ok && no_userinfo {
+                  Ok(())
+              } else {
+                  Err(format!(
+                      "base URL for {provider} must use HTTPS, or HTTP to localhost/private network"
+                  ))
+              }
+          }
+          '@
 
           $m = $matches[0]
 
