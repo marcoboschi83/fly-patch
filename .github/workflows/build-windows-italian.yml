@@ -95,7 +95,7 @@ jobs:
           replace_regex(
               "src-tauri/src/live.rs",
               r'(?m)^(    let on_model = \{)$',
-              r'    let live_language = {\n        let state = app.state::<AppState>();\n        state.storage.lock().unwrap().get_setting("asr.language").ok().flatten().filter(|v| v == "it" || v == "en").unwrap_or_else(|| "it".to_string())\n    };\n\n\1',
+              r'    let live_language = {\n        let state = app.state::<AppState>();\n        let storage = state.storage.lock().unwrap();\n        let configured_language = storage.get_setting("asr.language").ok().flatten();\n        configured_language\n            .filter(|value| value == "it" || value == "en")\n            .unwrap_or_else(|| "it".to_string())\n    };\n\n\1',
               "live transcription language setting"
           )
 
