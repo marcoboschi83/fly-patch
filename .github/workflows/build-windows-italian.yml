@@ -1,3 +1,227 @@
+name: Build Fly on the Wall 2.4.0 (Italian/English transcription + Italian reports + Local AI)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build Windows installer (unsigned)
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          repository: swarnavspujari/fly-on-the-wall
+          ref: v2.4.0
+          persist-credentials: false
+
+      - name: Install Python for source patching
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Add Italian/English transcription language selector
+        shell: pwsh
+        run: |
+          $patch = @'
+          from pathlib import Path
+
+          def replace(path, old, new, count=1):
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              found = text.count(old)
+              if found != count:
+                  raise SystemExit(f"{path}: expected {count} occurrence(s), found {found}")
+              p.write_text(text.replace(old, new, count), encoding="utf-8", newline="\n")
+
+          # Backend settings: expose, persist and validate the selected language.
+          replace(
+              "src-tauri/src/asr_commands.rs",
+              "pub struct AsrSettings {\n    pub tier: String,\n    pub model_id: Option<String>,",
+              "pub struct AsrSettings {\n    pub tier: String,\n    pub model_id: Option<String>,\n    pub language: String,"
+          )
+          replace(
+              "src-tauri/src/asr_commands.rs",
+              '        model_id: get("asr.model_id").filter(|s| !s.is_empty()),\n        use_groq:',
+              '        model_id: get("asr.model_id").filter(|s| !s.is_empty()),\n        language: get("asr.language")\n            .filter(|s| s == "it" || s == "en")\n            .unwrap_or_else(|| "it".to_string()),\n        use_groq:'
+          )
+          replace(
+              "src-tauri/src/asr_commands.rs",
+              "pub struct AsrSettingsUpdate {\n    pub tier: String,\n    pub model_id: Option<String>,",
+              "pub struct AsrSettingsUpdate {\n    pub tier: String,\n    pub model_id: Option<String>,\n    pub language: String,"
+          )
+          replace(
+              "src-tauri/src/asr_commands.rs",
+              "pub fn set_asr_settings(state: State<'_, AppState>, update: AsrSettingsUpdate) -> CmdResult<()> {\n    {",
+              """pub fn set_asr_settings(state: State<'_, AppState>, update: AsrSettingsUpdate) -> CmdResult<()> {
+              if update.language != "it" && update.language != "en" {
+                  return Err("Unsupported transcription language. Choose Italian or English.".into());
+              }
+              {"""
+          )
+          replace(
+              "src-tauri/src/asr_commands.rs",
+              '        storage\n            .set_setting("asr.tier", &update.tier)',
+              '        storage\n            .set_setting("asr.language", &update.language)\n            .map_err(|e| e.to_string())?;\n        storage\n            .set_setting("asr.tier", &update.tier)'
+          )
+
+          # Final transcription uses the selected language; Italian is the default.
+          replace(
+              "src-tauri/src/pipeline.rs",
+              """    // Meetings are transcribed in a fixed language ("asr.language" setting,
+              // default English, "auto" opts back into detection). Auto-detect on a
+              // language-less window (silence, noise) destabilizes whisper decoding —
+              // it was part of how a real meeting collapsed into a hallucination loop.
+              let language = match language_setting.as_deref() {
+                  Some("auto") => None,
+                  Some(lang) => Some(lang.to_string()),
+                  None => Some("en".to_string()),
+              };""",
+              """    // Transcribe in the user-selected language. Italian is the default;
+              // reports are generated separately in Italian by the Enhance prompt.
+              let language = match language_setting.as_deref() {
+                  Some("en") => Some("en".to_string()),
+                  Some("it") | None => Some("it".to_string()),
+                  _ => Some("it".to_string()),
+              };"""
+          )
+
+          # Live captions read the same persisted choice as the final transcript.
+          replace(
+              "src-tauri/src/live.rs",
+              """    if !enabled {
+                  return;
+              }
+
+              let on_model = {""",
+              """    if !enabled {
+                  return;
+              }
+
+              let live_language = {
+                  let state = app.state::<AppState>();
+                  state
+                      .storage
+                      .lock()
+                      .unwrap()
+                      .get_setting("asr.language")
+                      .ok()
+                      .flatten()
+                      .filter(|value| value == "it" || value == "en")
+                      .unwrap_or_else(|| "it".to_string())
+              };
+
+              let on_model = {"""
+          )
+          replace(
+              "src-tauri/src/live.rs",
+              "                        language: None,\n                        prompt:",
+              "                        language: Some(live_language.clone()),\n                        prompt:"
+          )
+
+          # Frontend types.
+          replace(
+              "frontend/src/types.ts",
+              "  model_id: string | null;\n  use_groq: boolean;",
+              "  model_id: string | null;\n  language: \"it\" | \"en\";\n  use_groq: boolean;"
+          )
+          replace(
+              "frontend/src/types.ts",
+              "  model_id: string | null;\n  use_groq: boolean;\n  max_quality: boolean;",
+              "  model_id: string | null;\n  language: \"it\" | \"en\";\n  use_groq: boolean;\n  max_quality: boolean;"
+          )
+
+          # Settings draft, save payload and dirty-state comparison.
+          replace(
+              "frontend/src/settingsModel.ts",
+              "  modelId: string;\n  maxQuality: boolean;",
+              '  modelId: string;\n  language: "it" | "en";\n  maxQuality: boolean;'
+          )
+          replace(
+              "frontend/src/settingsModel.ts",
+              "    modelId: s.model_id ?? \"\",\n    maxQuality: s.max_quality,",
+              '    modelId: s.model_id ?? "",\n    language: s.language,\n    maxQuality: s.max_quality,'
+          )
+          replace(
+              "frontend/src/settingsModel.ts",
+              "    model_id: draft.modelId || null,\n    // Keep a saved Cloud tier's own use_groq flag untouched.",
+              "    model_id: draft.modelId || null,\n    language: draft.language,\n    // Keep a saved Cloud tier's own use_groq flag untouched."
+          )
+          replace(
+              "frontend/src/settingsModel.ts",
+              "    draft.modelId !== base.modelId ||\n    draft.maxQuality !== base.maxQuality ||",
+              "    draft.modelId !== base.modelId ||\n    draft.language !== base.language ||\n    draft.maxQuality !== base.maxQuality ||"
+          )
+          replace(
+              "frontend/src/settingsModel.ts",
+              "      \"quality fast balanced best made on groq cloud key model whisper maximum gpu graphics card speed test engine models download disk hardware computer ram cpu cores vram api key keychain fallback\",",
+              "      \"quality fast balanced best made on groq cloud key model whisper maximum gpu graphics card speed test engine models download disk hardware computer ram cpu cores vram api key keychain fallback language Italian English transcription\","
+          )
+
+          # Visible dropdown in Settings > Transcripts.
+          replace(
+              "frontend/src/components/SettingsModal.tsx",
+              '''                    >
+                      <SettingsRow
+                        title="Quality"''',
+              '''                    >
+                      <SettingsRow
+                        title="Transcription language"
+                        helper="Language used to recognize speech. AI-generated reports remain in Italian."
+                        control={
+                          <Select
+                            aria-label="Transcription language"
+                            style={{ width: 230, maxWidth: "100%" }}
+                            value={draft.language}
+                            onChange={(e) =>
+                              patchDraft({ language: e.target.value as "it" | "en" })
+                            }
+                          >
+                            <option value="it">Italiano</option>
+                            <option value="en">English</option>
+                          </Select>
+                        }
+                      />
+                      <SettingsRow
+                        title="Quality"''',
+          )
+
+          # Add an instant on/off switch for live captions in Settings > Recording.
+          # The existing live loop already reads the persistent live.enabled setting.
+          replace(
+              "frontend/src/components/SettingsModal.tsx",
+              '  const [autoTranscribe, setAutoTranscribe] = useState(true);\n  const [autoBusy, setAutoBusy] = useState(false);',
+              '  const [autoTranscribe, setAutoTranscribe] = useState(true);\n  const [liveTranscription, setLiveTranscription] = useState(true);\n  const [liveBusy, setLiveBusy] = useState(false);\n  const [liveMsg, setLiveMsg] = useState<string | null>(null);\n  const [autoBusy, setAutoBusy] = useState(false);'
+          )
+          replace(
+              "frontend/src/components/SettingsModal.tsx",
+              '    api\n      .getAppSetting("capture.mic_device_id")\n      .then((v) => setMicId(v ?? ""))\n      .catch(console.error);',
+              '    api\n      .getAppSetting("capture.mic_device_id")\n      .then((v) => setMicId(v ?? ""))\n      .catch(console.error);\n    api\n      .getAppSetting("live.enabled")\n      .then((v) => setLiveTranscription(v !== "false"))\n      .catch(console.error);'
+          )
+          replace(
+              "frontend/src/components/SettingsModal.tsx",
+              '  /* ---------------------------------------------------------- transcripts */\n\n  const save = async (): Promise<boolean> => {',
+              '  const setLiveNow = async (next: boolean) => {\n    setLiveTranscription(next);\n    setLiveBusy(true);\n    setLiveMsg(null);\n    try {\n      await api.setAppSetting("live.enabled", String(next));\n    } catch (e) {\n      setLiveTranscription(!next);\n      setLiveMsg(String(e));\n    } finally {\n      setLiveBusy(false);\n    }\n  };\n\n  /* ---------------------------------------------------------- transcripts */\n\n  const save = async (): Promise<boolean> => {'
+          )
+          replace(
+              "frontend/src/components/SettingsModal.tsx",
+              '                    />\n                    <RemindNoticeRow />',
+              '                    />\n                    <SettingsRow\n                      title="Live transcription during recording"\n                      helper={liveMsg ?? "Shows rough captions while Record is active. The full speaker-separated transcript is still created after Stop."}\n                      helperTone={liveMsg ? "error" : "default"}\n                      control={\n                        <Switch\n                          label="Live transcription during recording"\n                          checked={liveTranscription}\n                          disabled={liveBusy}\n                          onChange={(v) => void setLiveNow(v)}\n                        />\n                      }\n                    />\n                    <RemindNoticeRow />'
+          )
+
+          # Keep the settings-model tests aligned with the new required field.
+          replace(
+              "frontend/src/settingsModel.test.ts",
+              "  model_id: null,\n  use_groq: false,",
+              '  model_id: null,\n  language: "it",\n  use_groq: false,'
+          )
+          replace(
+              "frontend/src/settingsModel.test.ts",
               "        model_id: saved.model_id,\n        use_groq: saved.use_groq,",
               "        model_id: saved.model_id,\n        language: saved.language,\n        use_groq: saved.use_groq,"
           )
