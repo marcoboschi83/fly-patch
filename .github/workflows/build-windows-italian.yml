@@ -48,15 +48,18 @@ jobs:
           $p = 'src-tauri/src/llm_commands.rs'
           $s = Get-Content $p -Raw
 
-          $pattern = '(?ms)^pub fn validate_base_url\(provider: &str, url: &str\) -> Result<(), String> \{.*?^\}'
-
-          $matches = [regex]::Matches($s, $pattern)
-
-          if ($matches.Count -ne 1) {
-            throw "Expected exactly one validate_base_url function, found $($matches.Count)."
+          if ($s.Contains('pub fn validate_base_url')) {
+            throw "validate_base_url already exists. Unexpected source version."
           }
 
-          $new = @'
+          $marker = 'pub fn set_llm_settings('
+          $index = $s.IndexOf($marker)
+
+          if ($index -lt 0) {
+            throw "set_llm_settings function not found."
+          }
+
+          $validator = @'
           pub fn validate_base_url(provider: &str, url: &str) -> Result<(), String> {
               let url = url.trim();
 
@@ -103,17 +106,31 @@ jobs:
           }
           '@
 
-          $m = $matches[0]
+          $commandAttribute = $s.LastIndexOf('#[tauri::command]', $index)
 
-          $s = $s.Substring(0, $m.Index) + $new.TrimEnd() + $s.Substring($m.Index + $m.Length)
+          if ($commandAttribute -lt 0) {
+            throw "Could not locate set_llm_settings command attribute."
+          }
+
+          $s = $s.Insert($commandAttribute, $validator + "`r`n")
+
+          $signature = "pub fn set_llm_settings(state: State<'_, AppState>, update: LlmSettingsUpdate) -> CmdResult<()> {"
+
+          if (-not $s.Contains($signature)) {
+            throw "set_llm_settings signature not recognized."
+          }
+
+          $replacement = $signature + "`r`n    validate_base_url(&update.provider, update.base_url.as_deref().unwrap_or(""""))?;"
+
+          $s = $s.Replace($signature, $replacement)
 
           Set-Content -Path $p -Value $s -NoNewline -Encoding utf8
 
-          if (-not (Select-String -Path $p -Pattern 'v4\.is_private\(\)' -Quiet)) {
-            throw "Patch verification failed."
+          if (-not $s.Contains('validate_base_url(&update.provider')) {
+            throw "Validation call insertion failed."
           }
 
-          Write-Host "Private LAN HTTP patch applied successfully."
+          Write-Host "Private LAN HTTP validation installed successfully."
 
       - name: Install Node.js
         uses: actions/setup-node@v4
