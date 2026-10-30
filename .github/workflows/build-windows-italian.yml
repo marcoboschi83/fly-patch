@@ -1,4 +1,5 @@
-name: Build Fly on the Wall 2.4.0 (Italian)
+
+name: Build Fly on the Wall 2.4.0 (Italian + Local AI)
 
 on:
   workflow_dispatch:
@@ -8,9 +9,10 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows installer (unsigned)
+    name: Build Windows installer (Italian + Local AI)
     runs-on: windows-latest
     timeout-minutes: 90
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -19,21 +21,141 @@ jobs:
           ref: v2.4.0
           persist-credentials: false
 
+      # --------------------------------------------------
+      # ITALIAN DEFAULT TRANSCRIPTION LANGUAGE
+      # --------------------------------------------------
+
       - name: Apply Italian default transcription language
         shell: pwsh
         run: |
           $p = 'src-tauri/src/pipeline.rs'
           $s = Get-Content $p -Raw
+
           $old = 'None => Some("en".to_string()),'
           $new = 'None => Some("it".to_string()),'
+
           if (-not $s.Contains($old)) {
-            throw "Patch context not found in $p. The upstream source may have changed."
+            throw "Patch context not found in $p."
           }
+
           $s = $s.Replace($old, $new)
+
           Set-Content -Path $p -Value $s -NoNewline -Encoding utf8
+
           if (-not (Select-String -Path $p -SimpleMatch $new -Quiet)) {
             throw 'Italian language patch verification failed.'
           }
+
+      # --------------------------------------------------
+      # ALLOW PRIVATE LAN HTTP ENDPOINTS FOR LOCAL AI
+      # --------------------------------------------------
+
+      - name: Allow private LAN HTTP endpoints for local AI
+        shell: pwsh
+        run: |
+          $p = 'src-tauri/src/llm_commands.rs'
+          $s = Get-Content $p -Raw
+
+          $old = @'
+          /// A custom base URL is where the provider's stored API key gets sent, so for
+          /// keyed providers it must be HTTPS (plain HTTP only to this machine). Ollama
+          /// holds no key; it just needs an http(s) URL. Empty = provider default.
+          pub fn validate_base_url(provider: &str, url: &str) -> Result<(), String> {
+              let url = url.trim();
+              if url.is_empty() {
+                  return Ok(());
+              }
+              let parsed = tauri::Url::parse(url).map_err(|_| format!("'{url}' is not a valid URL"))?;
+              let loopback = parsed.host_str().is_some_and(|h| {
+                  h.eq_ignore_ascii_case("localhost")
+                      || h.trim_start_matches('[')
+                          .trim_end_matches(']')
+                          .parse::<std::net::IpAddr>()
+                          .is_ok_and(|ip| ip.is_loopback())
+              });
+              let keyed = secret_key_for(provider).is_some();
+              let ok = match parsed.scheme() {
+                  "https" => true,
+                  "http" => !keyed || loopback,
+                  _ => false,
+              };
+              // Credentials in the URL would be logged/displayed; keyed providers use
+              // the keychain instead. (Ollama behind basic auth may carry them.)
+              let no_userinfo = !keyed || (parsed.username().is_empty() && parsed.password().is_none());
+              if ok && no_userinfo {
+                  Ok(())
+              } else {
+                  Err(format!(
+                      "base URL for {provider} must use https:// (http:// is only allowed for this computer)"
+                  ))
+              }
+          }
+          '@
+
+          $new = @'
+          /// A custom base URL may use HTTP only for loopback or private LAN IPs.
+          /// Keyed providers must never send credentials to arbitrary HTTP hosts.
+          pub fn validate_base_url(provider: &str, url: &str) -> Result<(), String> {
+              let url = url.trim();
+
+              if url.is_empty() {
+                  return Ok(());
+              }
+
+              let parsed = tauri::Url::parse(url)
+                  .map_err(|_| format!("'{url}' is not a valid URL"))?;
+
+              let private_host = parsed.host_str().is_some_and(|h| {
+                  let host = h.trim_start_matches('[').trim_end_matches(']');
+
+                  host.eq_ignore_ascii_case("localhost")
+                      || host.parse::<std::net::IpAddr>().is_ok_and(|ip| match ip {
+                          std::net::IpAddr::V4(v4) => {
+                              v4.is_private() || v4.is_loopback()
+                          }
+                          std::net::IpAddr::V6(v6) => {
+                              v6.is_loopback()
+                                  || (v6.segments()[0] & 0xfe00) == 0xfc00
+                          }
+                      })
+              });
+
+              let keyed = secret_key_for(provider).is_some();
+
+              let ok = match parsed.scheme() {
+                  "https" => true,
+                  "http" => !keyed || private_host,
+                  _ => false,
+              };
+
+              let no_userinfo = !keyed
+                  || (parsed.username().is_empty() && parsed.password().is_none());
+
+              if ok && no_userinfo {
+                  Ok(())
+              } else {
+                  Err(format!(
+                      "base URL for {provider} must use HTTPS, or HTTP to localhost/private network"
+                  ))
+              }
+          }
+          '@
+
+          if (-not $s.Contains($old)) {
+            throw "validate_base_url context not found. No changes applied."
+          }
+
+          $s = $s.Replace($old, $new)
+
+          Set-Content -Path $p -Value $s -NoNewline -Encoding utf8
+
+          if (-not (Select-String -Path $p -SimpleMatch 'HTTP to localhost/private network' -Quiet)) {
+            throw 'Private LAN HTTP patch verification failed.'
+          }
+
+      # --------------------------------------------------
+      # BUILD ENVIRONMENT
+      # --------------------------------------------------
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -50,11 +172,19 @@ jobs:
           node -v
           npm.cmd -v
 
+      # --------------------------------------------------
+      # FRONTEND
+      # --------------------------------------------------
+
       - name: Install frontend dependencies
         run: npm.cmd --prefix frontend ci --no-audit --no-fund
 
       - name: Build frontend
         run: npm.cmd --prefix frontend run build
+
+      # --------------------------------------------------
+      # MCP SIDECAR
+      # --------------------------------------------------
 
       - name: Build MCP sidecar
         run: cargo build --release -p fly-mcp
@@ -62,16 +192,24 @@ jobs:
       - name: Prepare sidecar
         run: node scripts/prepare-sidecars.mjs
 
+      # --------------------------------------------------
+      # TAURI
+      # --------------------------------------------------
+
       - name: Install Tauri CLI
         run: npm.cmd ci --ignore-scripts --no-audit --no-fund
 
       - name: Build Windows NSIS installer
         run: npm.cmd exec tauri build -- --bundles nsis
 
+      # --------------------------------------------------
+      # OUTPUT
+      # --------------------------------------------------
+
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: FlyOnTheWall-2.4.0-Italian-Windows-Installer
+          name: FlyOnTheWall-2.4.0-Italian-LocalAI-Windows
           path: target/release/bundle/nsis/*.exe
           if-no-files-found: error
           retention-days: 14
